@@ -1,0 +1,17 @@
+# 构建产物
+/gitlab-ci-mr-pipelines-hooks
+*.exe
+*.out
+
+# 本地环境变量（包含令牌，绝不提交）
+.env
+.env.*
+
+# 测试与覆盖率
+coverage.out
+
+# IDE / 系统
+.idea/
+.vscode/
+*.swp
+.DS_Store
