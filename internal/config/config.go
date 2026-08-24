@@ -1,4 +1,4 @@
-// Package config 负责从环境变量加载并校验网关配置。
+// Package config 负责从配置文件加载并校验网关配置。
 package config
 
 import (
@@ -7,107 +7,100 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Config 保存网关运行所需的全部配置。
 type Config struct {
-	// ListenAddr HTTP 监听地址，例如 ":8080"
-	ListenAddr string
-	// GitLabBaseURL 私有化 GitLab 的根地址，例如 "http://gitlab.example.com:8929"
-	GitLabBaseURL string
-	// GitLabToken 用于调用 GitLab API 的访问令牌（需要 api 权限）
-	GitLabToken string
-	// WebhookSecret 在 GitLab Webhook 中配置的 Secret token，用于校验请求来源。
-	// 为空时跳过校验（不推荐）。
-	WebhookSecret string
-	// TriggerOnUpdate 为 true 时，对任何 draft=false 的 MR 更新事件也触发流水线。
-	// 用于 GitLab 旧版本不携带 changes.draft 的兼容场景，默认关闭。
-	TriggerOnUpdate bool
+	// Listen HTTP 监听配置
+	Listen ListenConfig `yaml:"listen"`
+	// GitLab 私有化 GitLab 连接配置
+	GitLab GitLabConfig `yaml:"gitlab"`
+	// Webhook Webhook 校验配置
+	Webhook WebhookConfig `yaml:"webhook"`
 	// PipelineTimeout 调用 GitLab API 的超时时间
-	PipelineTimeout time.Duration
+	PipelineTimeout time.Duration `yaml:"pipeline_timeout"`
 	// MaxBodyBytes Webhook 请求体的最大字节数
-	MaxBodyBytes int64
+	MaxBodyBytes int64 `yaml:"max_body_bytes"`
 }
 
-// FromEnv 从环境变量读取配置并校验。
-//
-// 必需变量：
-//   - GITLAB_BASE_URL
-//   - GITLAB_TOKEN
-//
-// 可选变量：
-//   - LISTEN_ADDR            默认 ":8080"
-//   - GITLAB_WEBHOOK_SECRET  默认空（不校验）
-//   - TRIGGER_ON_UPDATE      默认 false
-//   - PIPELINE_TIMEOUT       默认 30s
-//   - MAX_BODY_BYTES         默认 10MB
-func FromEnv() (*Config, error) {
-	cfg := &Config{
-		ListenAddr:      envOr("LISTEN_ADDR", ":8080"),
-		GitLabBaseURL:   os.Getenv("GITLAB_BASE_URL"),
-		GitLabToken:     os.Getenv("GITLAB_TOKEN"),
-		WebhookSecret:   os.Getenv("GITLAB_WEBHOOK_SECRET"),
-		TriggerOnUpdate: envBool("TRIGGER_ON_UPDATE", false),
-		PipelineTimeout: envDuration("PIPELINE_TIMEOUT", 30*time.Second),
-		MaxBodyBytes:    envInt64("MAX_BODY_BYTES", 10<<20),
+// ListenConfig HTTP 监听配置。
+type ListenConfig struct {
+	// Addr 监听地址，例如 ":8080"
+	Addr string `yaml:"addr"`
+}
+
+// GitLabConfig 私有化 GitLab 连接配置。
+type GitLabConfig struct {
+	// BaseURL GitLab 根地址（含端口），例如 "http://gitlab.example.com:8929"
+	BaseURL string `yaml:"base_url"`
+	// Token 用于调用 GitLab API 的访问令牌（需要 api 权限）
+	Token string `yaml:"token"`
+}
+
+// WebhookConfig Webhook 校验配置。
+type WebhookConfig struct {
+	// Secret 在 GitLab Webhook 中配置的 Secret token，用于校验请求来源。
+	// 为空时跳过校验（不推荐）。
+	Secret string `yaml:"secret"`
+}
+
+// Default 返回带默认值的配置。
+func Default() *Config {
+	return &Config{
+		Listen: ListenConfig{
+			Addr: ":8080",
+		},
+		PipelineTimeout: 30 * time.Second,
+		MaxBodyBytes:    10 << 20, // 10MB
+	}
+}
+
+// Load 从指定路径读取 YAML 配置文件并校验。
+// 未提供的字段使用默认值。
+func Load(path string) (*Config, error) {
+	cfg := Default()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取配置文件失败: %w", err)
 	}
 
-	if cfg.GitLabBaseURL == "" {
-		return nil, fmt.Errorf("缺少必需环境变量 GITLAB_BASE_URL")
-	}
-	if cfg.GitLabToken == "" {
-		return nil, fmt.Errorf("缺少必需环境变量 GITLAB_TOKEN")
-	}
-	if cfg.PipelineTimeout <= 0 {
-		return nil, fmt.Errorf("PIPELINE_TIMEOUT 必须为正数")
-	}
-	if cfg.MaxBodyBytes <= 0 {
-		return nil, fmt.Errorf("MAX_BODY_BYTES 必须为正数")
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("解析配置文件 %s 失败: %w", path, err)
 	}
 
-	// 规范化 base URL：补全协议、去掉尾部斜杠
-	if !strings.Contains(cfg.GitLabBaseURL, "://") {
-		cfg.GitLabBaseURL = "http://" + cfg.GitLabBaseURL
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
-	u, err := url.Parse(cfg.GitLabBaseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("GITLAB_BASE_URL 不是合法的 http(s) 地址: %q", cfg.GitLabBaseURL)
-	}
-	cfg.GitLabBaseURL = strings.TrimRight(u.String(), "/")
-
 	return cfg, nil
 }
 
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+// Validate 校验配置合法性并做规范化。
+func (c *Config) Validate() error {
+	if c.GitLab.BaseURL == "" {
+		return fmt.Errorf("缺少必需配置 gitlab.base_url")
 	}
-	return def
-}
+	if c.GitLab.Token == "" {
+		return fmt.Errorf("缺少必需配置 gitlab.token")
+	}
+	if c.PipelineTimeout <= 0 {
+		return fmt.Errorf("pipeline_timeout 必须为正数")
+	}
+	if c.MaxBodyBytes <= 0 {
+		return fmt.Errorf("max_body_bytes 必须为正数")
+	}
 
-func envBool(key string, def bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
+	// 规范化 base URL：补全协议、去掉尾部斜杠
+	if !strings.Contains(c.GitLab.BaseURL, "://") {
+		c.GitLab.BaseURL = "http://" + c.GitLab.BaseURL
 	}
-	return strings.EqualFold(v, "true") || v == "1"
-}
+	u, err := url.Parse(c.GitLab.BaseURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("gitlab.base_url 不是合法的 http(s) 地址: %q", c.GitLab.BaseURL)
+	}
+	c.GitLab.BaseURL = strings.TrimRight(u.String(), "/")
 
-func envDuration(key string, def time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return def
-}
-
-func envInt64(key string, def int64) int64 {
-	if v := os.Getenv(key); v != "" {
-		var n int64
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
-			return n
-		}
-	}
-	return def
+	return nil
 }

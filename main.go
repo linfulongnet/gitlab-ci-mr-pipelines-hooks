@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,18 +21,25 @@ import (
 	"github.com/linfulongnet/gitlab-ci-mr-pipelines-hooks/internal/webhook"
 )
 
+// configPath 返回配置文件路径，可通过 -config 参数指定，默认 ./config.yaml。
+func configPath() string {
+	path := flag.String("config", "config.yaml", "配置文件路径")
+	flag.Parse()
+	return *path
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	cfg, err := config.FromEnv()
+	cfg, err := config.Load(configPath())
 	if err != nil {
 		logger.Error("配置加载失败", "err", err)
 		os.Exit(1)
 	}
 
-	client := gitlab.New(cfg.GitLabBaseURL, cfg.GitLabToken, cfg.PipelineTimeout)
-	handler := webhook.NewHandler(client, cfg.WebhookSecret, cfg.TriggerOnUpdate, logger)
+	client := gitlab.New(cfg.GitLab.BaseURL, cfg.GitLab.Token, cfg.PipelineTimeout)
+	handler := webhook.NewHandler(client, cfg.Webhook.Secret, logger)
 
 	mux := http.NewServeMux()
 	mux.Handle("/webhook", handler)
@@ -41,7 +49,7 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:              cfg.ListenAddr,
+		Addr:              cfg.Listen.Addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -55,10 +63,9 @@ func main() {
 
 	go func() {
 		logger.Info("Webhook 网关启动",
-			"listen_addr", cfg.ListenAddr,
-			"gitlab_base_url", cfg.GitLabBaseURL,
-			"trigger_on_update", cfg.TriggerOnUpdate,
-			"secret_configured", cfg.WebhookSecret != "",
+			"listen_addr", cfg.Listen.Addr,
+			"gitlab_base_url", cfg.GitLab.BaseURL,
+			"secret_configured", cfg.Webhook.Secret != "",
 		)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("HTTP 服务异常退出", "err", err)

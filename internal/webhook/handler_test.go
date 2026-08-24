@@ -38,7 +38,7 @@ func boolPtr(b bool) *bool { return &b }
 
 func TestEvaluateDraftToReady(t *testing.T) {
 	p := newPayload("update", false, boolPtr(true), boolPtr(false))
-	r := p.Evaluate(false)
+	r := p.Evaluate()
 	if !r.Triggered {
 		t.Fatalf("期望触发，实际: %+v", r)
 	}
@@ -47,7 +47,7 @@ func TestEvaluateDraftToReady(t *testing.T) {
 func TestEvaluateNotMergeRequest(t *testing.T) {
 	p := newPayload("update", false, boolPtr(true), boolPtr(false))
 	p.ObjectKind = "push"
-	if r := p.Evaluate(false); r.Triggered {
+	if r := p.Evaluate(); r.Triggered {
 		t.Fatalf("非 MR 事件不应触发: %+v", r)
 	}
 }
@@ -55,33 +55,30 @@ func TestEvaluateNotMergeRequest(t *testing.T) {
 func TestEvaluateNotUpdateAction(t *testing.T) {
 	// 打开新 MR 时 action=open，不应触发
 	p := newPayload("open", true, nil, nil)
-	if r := p.Evaluate(false); r.Triggered {
+	if r := p.Evaluate(); r.Triggered {
 		t.Fatalf("open 事件不应触发: %+v", r)
 	}
 }
 
 func TestEvaluateReadyToDraftIgnored(t *testing.T) {
 	p := newPayload("update", true, boolPtr(false), boolPtr(true))
-	if r := p.Evaluate(false); r.Triggered {
+	if r := p.Evaluate(); r.Triggered {
 		t.Fatalf("ready -> draft 不应触发: %+v", r)
 	}
 }
 
 func TestEvaluateDraftUnchangedIgnored(t *testing.T) {
 	p := newPayload("update", false, boolPtr(false), boolPtr(false))
-	if r := p.Evaluate(false); r.Triggered {
+	if r := p.Evaluate(); r.Triggered {
 		t.Fatalf("draft 状态未变化不应触发: %+v", r)
 	}
 }
 
-func TestEvaluateMissingChangesRequiresCompatMode(t *testing.T) {
-	// 旧版 GitLab 不携带 changes.draft
+func TestEvaluateMissingChangesIgnored(t *testing.T) {
+	// GitLab 17.10+ 一定携带 changes.draft；缺失视为异常并忽略
 	p := newPayload("update", false, nil, nil)
-	if r := p.Evaluate(false); r.Triggered {
-		t.Fatalf("严格模式下缺失 changes.draft 不应触发: %+v", r)
-	}
-	if r := p.Evaluate(true); !r.Triggered {
-		t.Fatalf("兼容模式下应触发: %+v", r)
+	if r := p.Evaluate(); r.Triggered {
+		t.Fatalf("缺失 changes.draft 不应触发: %+v", r)
 	}
 }
 
@@ -125,7 +122,7 @@ func TestHandlerTriggersPipeline(t *testing.T) {
 	fake := &fakeTriggerer{
 		pipeline: &gitlab.Pipeline{ID: 123, Status: "pending", WebURL: "https://gitlab.example.com/pipe/123"},
 	}
-	h := NewHandler(fake, "secret", false, testLogger())
+	h := NewHandler(fake, "secret", testLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(fullPayloadJSON()))
 	req.Header.Set("X-Gitlab-Token", "secret")
@@ -151,7 +148,7 @@ func TestHandlerTriggersPipeline(t *testing.T) {
 }
 
 func TestHandlerRejectsBadSecret(t *testing.T) {
-	h := NewHandler(&fakeTriggerer{}, "secret", false, testLogger())
+	h := NewHandler(&fakeTriggerer{}, "secret", testLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(fullPayloadJSON()))
 	req.Header.Set("X-Gitlab-Token", "wrong")
@@ -166,7 +163,7 @@ func TestHandlerRejectsBadSecret(t *testing.T) {
 
 func TestHandlerIgnoresNonReadyEvent(t *testing.T) {
 	fake := &fakeTriggerer{pipeline: &gitlab.Pipeline{ID: 1}}
-	h := NewHandler(fake, "", false, testLogger())
+	h := NewHandler(fake, "", testLogger())
 
 	// ready -> draft，不应触发
 	payload := fullPayloadJSON()

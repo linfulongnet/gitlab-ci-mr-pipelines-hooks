@@ -29,24 +29,52 @@ MR Pipeline
 
 ## 特性
 
-- 仅使用 Go 标准库，零第三方依赖，单二进制部署
+- 仅使用 Go 标准库 + `gopkg.in/yaml.v3`，单二进制部署
 - 通过 `changes.draft: true → false` 精确判定 "Mark as ready"，不会误触发其他 MR 更新
 - Webhook Secret 校验（`X-Gitlab-Token`，恒定时间比较）
-- 私有化 GitLab：地址、端口、令牌均可配置
+- 私有化 GitLab：地址、端口、令牌均通过 **YAML 配置文件** 提供
 - 结构化日志（JSON）、优雅关闭、Docker 部署
-- 兼容模式 `TRIGGER_ON_UPDATE`：适配不携带 `changes.draft` 的旧版 GitLab
+- 仅支持 GitLab **17.10 及以上**（与 `CI_MERGE_REQUEST_DRAFT` 变量引入版本一致）
 
-## 环境变量
+## 版本要求
 
-| 变量 | 必填 | 默认值 | 说明 |
+本项目依赖 GitLab webhook 中的 `changes.draft` 字段，该字段自 **GitLab 17.10**
+（`CI_MERGE_REQUEST_DRAFT` 变量引入的版本）起稳定存在。低于 17.10 的版本不受支持。
+
+## 配置文件
+
+通过 `-config` 参数指定配置文件路径（默认 `./config.yaml`）。参考
+[`config.example.yaml`](./config.example.yaml)：
+
+```yaml
+# HTTP 监听配置
+listen:
+  addr: ":8080"
+
+# 私有化 GitLab 连接配置
+gitlab:
+  base_url: "http://gitlab.example.com:8929"   # 根地址，含端口
+  token: "glpat-xxxxxxxxxxxxxxxx"               # 访问令牌（需 api 权限）
+
+# Webhook 校验配置
+webhook:
+  secret: ""                                    # 与 GitLab Webhook Secret 一致；留空不校验
+
+# 调用 GitLab API 的超时时间
+pipeline_timeout: 30s
+
+# Webhook 请求体上限（字节），默认 10MB
+max_body_bytes: 10485760
+```
+
+| 配置项 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `GITLAB_BASE_URL` | ✅ | — | 私有化 GitLab 根地址，含端口，如 `http://gitlab.example.com:8929` |
-| `GITLAB_TOKEN` | ✅ | — | GitLab 访问令牌（Personal/Project Access Token，需勾选 `api` 权限） |
-| `GITLAB_WEBHOOK_SECRET` | ❌ | 空（不校验） | Webhook Secret token，建议配置 |
-| `LISTEN_ADDR` | ❌ | `:8080` | 网关 HTTP 监听地址 |
-| `TRIGGER_ON_UPDATE` | ❌ | `false` | 兼容旧版 GitLab：对任意 `draft=false` 的 MR 更新也触发 |
-| `PIPELINE_TIMEOUT` | ❌ | `30s` | GitLab API 调用超时（如 `10s`、`1m`） |
-| `MAX_BODY_BYTES` | ❌ | `10485760` | Webhook 请求体上限（字节） |
+| `listen.addr` | ❌ | `:8080` | 网关 HTTP 监听地址 |
+| `gitlab.base_url` | ✅ | — | 私有化 GitLab 根地址，含端口，如 `http://gitlab.example.com:8929` |
+| `gitlab.token` | ✅ | — | GitLab 访问令牌（Personal/Project Access Token，需勾选 `api` 权限） |
+| `webhook.secret` | ❌ | 空（不校验） | Webhook Secret token，建议配置 |
+| `pipeline_timeout` | ❌ | `30s` | GitLab API 调用超时（如 `10s`、`1m`） |
+| `max_body_bytes` | ❌ | `10485760` | Webhook 请求体上限（字节） |
 
 ## 快速开始
 
@@ -54,11 +82,9 @@ MR Pipeline
 
 ```bash
 go build -o gateway .
-GITLAB_BASE_URL=http://gitlab.example.com:8929 \
-GITLAB_TOKEN=glpat-xxxx \
-GITLAB_WEBHOOK_SECRET=my-secret \
-LISTEN_ADDR=:8080 \
-./gateway
+cp config.example.yaml config.yaml
+# 编辑 config.yaml，填入 gitlab.base_url 与 gitlab.token
+./gateway -config config.yaml
 ```
 
 或使用 Docker：
@@ -66,11 +92,11 @@ LISTEN_ADDR=:8080 \
 ```bash
 docker build -t mr-hooks-gateway .
 docker run -d -p 8080:8080 \
-  -e GITLAB_BASE_URL=http://gitlab.example.com:8929 \
-  -e GITLAB_TOKEN=glpat-xxxx \
-  -e GITLAB_WEBHOOK_SECRET=my-secret \
+  -v "$PWD/config.yaml:/etc/gateway/config.yaml:ro" \
   --name mr-hooks mr-hooks-gateway
 ```
+
+> 镜像默认从 `/etc/gateway/config.yaml` 读取配置，通过挂载覆盖即可。
 
 健康检查：`curl http://localhost:8080/healthz` → `{"status":"ok"}`
 
@@ -79,7 +105,7 @@ docker run -d -p 8080:8080 \
 项目 → **Settings → Webhooks**（或群组级 Webhook）：
 
 - **URL**: `http://<网关地址>:8080/webhook`
-- **Secret token**: 与 `GITLAB_WEBHOOK_SECRET` 一致
+- **Secret token**: 与 `config.yaml` 中 `webhook.secret` 一致
 - **Trigger**: 勾选 **Merge request events**
 - 保存后点击 **Test** 验证连通性
 
@@ -97,17 +123,14 @@ docker run -d -p 8080:8080 \
 
 ## 判定逻辑
 
-严格模式（默认）仅在同时满足以下条件时触发：
+仅在同时满足以下条件时触发：
 
 1. `object_kind == "merge_request"`
 2. `object_attributes.action == "update"`
 3. `changes.draft.from == true` 且 `changes.draft.to == false`
 
 任一不满足都会被忽略并返回 `200 {"status":"ignored"}`，不会干扰 GitLab 重试。
-
-**兼容旧版 GitLab**：若你的 GitLab 版本过旧、webhook 中不含 `changes.draft` 字段，
-可设置 `TRIGGER_ON_UPDATE=true`——此时任何非草稿 MR 的 update 事件都会触发流水线
-（注意：这会放大触发范围，建议仅在确认旧版本后开启）。
+若 `changes.draft` 缺失（GitLab 版本低于 17.10），同样忽略并记录日志。
 
 ## 常见问题
 
@@ -116,7 +139,7 @@ A: 网关只负责"创建 MR Pipeline"。Job 是否执行取决于项目的 `.gi
 `workflow: rules` 是否允许 MR pipeline（如 `if: $CI_PIPELINE_SOURCE == "merge_request_event"`）。
 
 **Q: 409 / 403 错误？**
-A: 确认 `GITLAB_TOKEN` 具备 `api` 权限，且属于该项目或更高层级。
+A: 确认 `config.yaml` 中 `gitlab.token` 具备 `api` 权限，且属于该项目或更高层级。
 
 **Q: 如何确认网关收到了事件？**
 A: 在 GitLab Webhook 页面点击 "Test"，网关日志会输出收到的事件与判定结果。

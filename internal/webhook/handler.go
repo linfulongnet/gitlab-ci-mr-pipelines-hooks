@@ -51,13 +51,15 @@ type ReadyTransition struct {
 
 // Evaluate 判定该事件是否为"Mark as ready"转换，以及是否需要触发流水线。
 //
-// 判定逻辑（严格模式，默认）：
+// 判定逻辑：
 //  1. 仅接受 object_kind == "merge_request" 的事件；
 //  2. 仅接受 action == "update"（标记为就绪会产生 update 事件）；
-//  3. 核心依据 changes.draft：from == true 且 to == false；
-//  4. 若配置了 TriggerOnUpdate（兼容旧版 GitLab 不带 changes.draft），
-//     则对任何 draft=false 的 MR 更新事件也触发。
-func (p *Payload) Evaluate(triggerOnUpdate bool) ReadyTransition {
+//  3. 核心依据 changes.draft：from == true 且 to == false。
+//
+// 注意：本项目仅支持 GitLab 17.10 及以上版本（与 CI_MERGE_REQUEST_DRAFT
+// 变量引入的版本一致），该版本起的 webhook 一定携带 changes.draft 字段。
+// 若 changes.draft 缺失，视为异常并忽略。
+func (p *Payload) Evaluate() ReadyTransition {
 	if p.ObjectKind != "merge_request" {
 		return ReadyTransition{false, "非 merge_request 事件，忽略"}
 	}
@@ -67,27 +69,19 @@ func (p *Payload) Evaluate(triggerOnUpdate bool) ReadyTransition {
 		return ReadyTransition{false, "action 不是 update（" + attrs.Action + "），忽略"}
 	}
 
-	if p.Changes.Draft != nil {
-		from, to := p.Changes.Draft.From, p.Changes.Draft.To
-		switch {
-		case from && !to:
-			return ReadyTransition{true, "检测到 draft: true -> false（Mark as ready）"}
-		case from == to:
-			return ReadyTransition{false, "draft 状态未变化（from == to == " + boolStr(from) + "），忽略"}
-		default: // !from && to
-			return ReadyTransition{false, "检测到 draft: false -> true（重新标记为草稿），忽略"}
-		}
+	if p.Changes.Draft == nil {
+		return ReadyTransition{false, "changes.draft 缺失（GitLab 版本可能低于 17.10），忽略"}
 	}
 
-	// 旧版 GitLab 可能不携带 changes.draft，需要显式开启兼容模式
-	if triggerOnUpdate {
-		if !attrs.Draft {
-			return ReadyTransition{true, "兼容模式：非草稿 MR 收到 update 事件，触发流水线"}
-		}
-		return ReadyTransition{false, "兼容模式：MR 仍为草稿，忽略"}
+	from, to := p.Changes.Draft.From, p.Changes.Draft.To
+	switch {
+	case from && !to:
+		return ReadyTransition{true, "检测到 draft: true -> false（Mark as ready）"}
+	case from == to:
+		return ReadyTransition{false, "draft 状态未变化（from == to == " + boolStr(from) + "），忽略"}
+	default: // !from && to
+		return ReadyTransition{false, "检测到 draft: false -> true（重新标记为草稿），忽略"}
 	}
-
-	return ReadyTransition{false, "changes.draft 缺失且未开启 TRIGGER_ON_UPDATE，忽略"}
 }
 
 // Triggerer 触发 MR 流水线的接口，便于测试注入。
@@ -97,19 +91,17 @@ type Triggerer interface {
 
 // Handler 处理 GitLab Webhook 请求。
 type Handler struct {
-	gitlab          Triggerer
-	webhookSecret   string
-	triggerOnUpdate bool
-	logger          *slog.Logger
+	gitlab        Triggerer
+	webhookSecret string
+	logger        *slog.Logger
 }
 
 // NewHandler 创建 Webhook 处理器。
-func NewHandler(gl Triggerer, webhookSecret string, triggerOnUpdate bool, logger *slog.Logger) *Handler {
+func NewHandler(gl Triggerer, webhookSecret string, logger *slog.Logger) *Handler {
 	return &Handler{
-		gitlab:          gl,
-		webhookSecret:   webhookSecret,
-		triggerOnUpdate: triggerOnUpdate,
-		logger:          logger,
+		gitlab:        gl,
+		webhookSecret: webhookSecret,
+		logger:        logger,
 	}
 }
 
@@ -147,7 +139,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 	logger.Info("收到 Merge Request Webhook 事件")
 
-	result := payload.Evaluate(h.triggerOnUpdate)
+	result := payload.Evaluate()
 	logger.Info("事件判定", "triggered", result.Triggered, "reason", result.Reason)
 
 	if !result.Triggered {
