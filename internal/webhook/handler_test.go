@@ -17,68 +17,118 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// --- Evaluate 判定逻辑测试 ---
+// --- stateTracker 判定逻辑测试 ---
 
-func newPayload(action string, draft bool, from, to *bool) *Payload {
-	p := &Payload{
-		ObjectKind: "merge_request",
-	}
+func newPayload(action string, draft bool, projectID, iid int) *Payload {
+	p := &Payload{ObjectKind: "merge_request"}
 	p.ObjectAttributes.Action = action
 	p.ObjectAttributes.Draft = draft
-	if from != nil && to != nil {
-		p.Changes.Draft = &struct {
-			From bool `json:"from"`
-			To   bool `json:"to"`
-		}{From: *from, To: *to}
-	}
+	p.ObjectAttributes.TargetProjectID = projectID
+	p.ObjectAttributes.IID = iid
 	return p
 }
 
-func boolPtr(b bool) *bool { return &b }
+// 模拟真实流程：open(draft) -> update(ready) 应触发
+func TestStateTrackerDraftToReady(t *testing.T) {
+	tracker := newStateTracker()
 
-func TestEvaluateDraftToReady(t *testing.T) {
-	p := newPayload("update", false, boolPtr(true), boolPtr(false))
-	r := p.Evaluate()
+	// 创建草稿 MR
+	if r := tracker.Evaluate(newPayload("open", true, 7, 10)); r.Triggered {
+		t.Fatalf("open 事件不应触发: %+v", r)
+	}
+	// Mark as ready
+	r := tracker.Evaluate(newPayload("update", false, 7, 10))
 	if !r.Triggered {
 		t.Fatalf("期望触发，实际: %+v", r)
 	}
 }
 
-func TestEvaluateNotMergeRequest(t *testing.T) {
-	p := newPayload("update", false, boolPtr(true), boolPtr(false))
+// 冷启动：首次见到 update 事件（无 open 记录）不应触发
+func TestStateTrackerColdStartNoTrigger(t *testing.T) {
+	tracker := newStateTracker()
+	r := tracker.Evaluate(newPayload("update", false, 7, 10))
+	if r.Triggered {
+		t.Fatalf("冷启动首次事件不应触发: %+v", r)
+	}
+}
+
+func TestStateTrackerNotMergeRequest(t *testing.T) {
+	tracker := newStateTracker()
+	p := newPayload("update", false, 7, 10)
 	p.ObjectKind = "push"
-	if r := p.Evaluate(); r.Triggered {
+	if r := tracker.Evaluate(p); r.Triggered {
 		t.Fatalf("非 MR 事件不应触发: %+v", r)
 	}
 }
 
-func TestEvaluateNotUpdateAction(t *testing.T) {
-	// 打开新 MR 时 action=open，不应触发
-	p := newPayload("open", true, nil, nil)
-	if r := p.Evaluate(); r.Triggered {
-		t.Fatalf("open 事件不应触发: %+v", r)
-	}
-}
-
-func TestEvaluateReadyToDraftIgnored(t *testing.T) {
-	p := newPayload("update", true, boolPtr(false), boolPtr(true))
-	if r := p.Evaluate(); r.Triggered {
+// ready -> draft 不应触发
+func TestStateTrackerReadyToDraftIgnored(t *testing.T) {
+	tracker := newStateTracker()
+	tracker.Evaluate(newPayload("open", false, 7, 10)) // 创建即 ready
+	if r := tracker.Evaluate(newPayload("update", true, 7, 10)); r.Triggered {
 		t.Fatalf("ready -> draft 不应触发: %+v", r)
 	}
 }
 
-func TestEvaluateDraftUnchangedIgnored(t *testing.T) {
-	p := newPayload("update", false, boolPtr(false), boolPtr(false))
-	if r := p.Evaluate(); r.Triggered {
-		t.Fatalf("draft 状态未变化不应触发: %+v", r)
+// draft 状态未变化不应触发
+func TestStateTrackerDraftUnchangedIgnored(t *testing.T) {
+	tracker := newStateTracker()
+	tracker.Evaluate(newPayload("open", true, 7, 10))
+	if r := tracker.Evaluate(newPayload("update", true, 7, 10)); r.Triggered {
+		t.Fatalf("draft 未变化不应触发: %+v", r)
 	}
 }
 
-func TestEvaluateMissingChangesIgnored(t *testing.T) {
-	// GitLab 17.10+ 一定携带 changes.draft；缺失视为异常并忽略
-	p := newPayload("update", false, nil, nil)
-	if r := p.Evaluate(); r.Triggered {
-		t.Fatalf("缺失 changes.draft 不应触发: %+v", r)
+// 多次切换：draft -> ready -> draft -> ready，第二次 ready 也应触发
+func TestStateTrackerMultipleToggles(t *testing.T) {
+	tracker := newStateTracker()
+	tracker.Evaluate(newPayload("open", true, 7, 10)) // draft
+
+	if r := tracker.Evaluate(newPayload("update", false, 7, 10)); !r.Triggered {
+		t.Fatalf("第一次 ready 应触发: %+v", r)
+	}
+	tracker.Advance(newPayload("update", false, 7, 10))
+
+	if r := tracker.Evaluate(newPayload("update", true, 7, 10)); r.Triggered {
+		t.Fatalf("回到 draft 不应触发: %+v", r)
+	}
+
+	if r := tracker.Evaluate(newPayload("update", false, 7, 10)); !r.Triggered {
+		t.Fatalf("第二次 ready 应触发: %+v", r)
+	}
+}
+
+// close/merge 清除状态
+func TestStateTrackerCloseClearsState(t *testing.T) {
+	tracker := newStateTracker()
+	tracker.Evaluate(newPayload("open", true, 7, 10))
+	if r := tracker.Evaluate(newPayload("close", false, 7, 10)); r.Triggered {
+		t.Fatalf("close 不应触发: %+v", r)
+	}
+	// 关闭后重新 open 应视为全新 MR，不触发
+	if r := tracker.Evaluate(newPayload("open", false, 7, 10)); r.Triggered {
+		t.Fatalf("close 后 open 不应触发: %+v", r)
+	}
+}
+
+// 触发失败后状态不推进，重试可再次触发
+func TestStateTrackerAdvanceOnlyOnSuccess(t *testing.T) {
+	tracker := newStateTracker()
+	tracker.Evaluate(newPayload("open", true, 7, 10))
+
+	// 触发失败：不调用 Advance，状态仍为 draft
+	if r := tracker.Evaluate(newPayload("update", false, 7, 10)); !r.Triggered {
+		t.Fatalf("应触发: %+v", r)
+	}
+	// 不 Advance，重试同一事件仍应触发
+	if r := tracker.Evaluate(newPayload("update", false, 7, 10)); !r.Triggered {
+		t.Fatalf("未推进状态时重试应再次触发: %+v", r)
+	}
+
+	// 成功后推进，再次收到相同事件不再触发
+	tracker.Advance(newPayload("update", false, 7, 10))
+	if r := tracker.Evaluate(newPayload("update", false, 7, 10)); r.Triggered {
+		t.Fatalf("推进状态后不应再触发: %+v", r)
 	}
 }
 
@@ -98,36 +148,43 @@ func (f *fakeTriggerer) TriggerMRPipeline(_ context.Context, projectID, iid int)
 	return f.pipeline, f.err
 }
 
-func fullPayloadJSON() []byte {
+func payloadJSON(action string, draft bool) []byte {
 	payload := map[string]any{
 		"object_kind": "merge_request",
 		"object_attributes": map[string]any{
-			"action":            "update",
-			"draft":             false,
+			"action":            action,
+			"draft":             draft,
 			"iid":               42,
 			"title":             "feat: add hooks",
 			"source_branch":     "feature/hooks",
 			"target_project_id": 7,
 		},
 		"project": map[string]any{"id": 7},
-		"changes": map[string]any{
-			"draft": map[string]any{"from": true, "to": false},
-		},
 	}
 	b, _ := json.Marshal(payload)
 	return b
 }
 
+// 完整流程：open(draft) -> update(ready) 触发流水线
 func TestHandlerTriggersPipeline(t *testing.T) {
 	fake := &fakeTriggerer{
 		pipeline: &gitlab.Pipeline{ID: 123, Status: "pending", WebURL: "https://gitlab.example.com/pipe/123"},
 	}
 	h := NewHandler(fake, "secret", testLogger())
 
-	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(fullPayloadJSON()))
+	// 创建草稿 MR
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(payloadJSON("open", true)))
 	req.Header.Set("X-Gitlab-Token", "secret")
 	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("open 应返回 200 ignored，实际 %d", rec.Code)
+	}
 
+	// Mark as ready -> 触发
+	req = httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(payloadJSON("update", false)))
+	req.Header.Set("X-Gitlab-Token", "secret")
+	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
@@ -150,7 +207,7 @@ func TestHandlerTriggersPipeline(t *testing.T) {
 func TestHandlerRejectsBadSecret(t *testing.T) {
 	h := NewHandler(&fakeTriggerer{}, "secret", testLogger())
 
-	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(fullPayloadJSON()))
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(payloadJSON("update", false)))
 	req.Header.Set("X-Gitlab-Token", "wrong")
 	rec := httptest.NewRecorder()
 
@@ -161,28 +218,19 @@ func TestHandlerRejectsBadSecret(t *testing.T) {
 	}
 }
 
-func TestHandlerIgnoresNonReadyEvent(t *testing.T) {
+// 冷启动：无 open 记录直接收到 update(ready) 不应触发
+func TestHandlerColdStartNoTrigger(t *testing.T) {
 	fake := &fakeTriggerer{pipeline: &gitlab.Pipeline{ID: 1}}
 	h := NewHandler(fake, "", testLogger())
 
-	// ready -> draft，不应触发
-	payload := fullPayloadJSON()
-	var m map[string]any
-	_ = json.Unmarshal(payload, &m)
-	attrs := m["object_attributes"].(map[string]any)
-	attrs["draft"] = true
-	changes := m["changes"].(map[string]any)
-	changes["draft"] = map[string]any{"from": false, "to": true}
-	b, _ := json.Marshal(m)
-
-	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(b))
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(payloadJSON("update", false)))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("期望 200 ignored，实际 %d", rec.Code)
+		t.Fatalf("冷启动应返回 200 ignored，实际 %d", rec.Code)
 	}
 	if fake.calls != 0 {
-		t.Fatalf("不应触发流水线，实际触发 %d 次", fake.calls)
+		t.Fatalf("冷启动不应触发流水线，实际触发 %d 次", fake.calls)
 	}
 }

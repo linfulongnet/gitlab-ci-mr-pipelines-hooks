@@ -30,11 +30,10 @@ MR Pipeline
 ## 特性
 
 - 仅使用 Go 标准库 + `gopkg.in/yaml.v3`，单二进制部署
-- 通过 `changes.draft: true → false` 精确判定 "Mark as ready"，不会误触发其他 MR 更新
+- 通过**状态机跟踪** `object_attributes.draft` 精确判定 "Mark as ready"，不会误触发其他 MR 更新
 - Webhook Secret 校验（`X-Gitlab-Token`，恒定时间比较）
 - 私有化 GitLab：地址、端口、令牌均通过 **YAML 配置文件** 提供
 - 结构化日志（JSON）、优雅关闭、Docker 部署
-- 仅支持 GitLab **17.10 及以上**（与 `CI_MERGE_REQUEST_DRAFT` 变量引入版本一致）
 
 ## 版本要求
 
@@ -123,14 +122,23 @@ docker run -d -p 9932:9932 \
 
 ## 判定逻辑
 
-仅在同时满足以下条件时触发：
+网关通过**状态机**跟踪每个 MR 的草稿状态（`object_attributes.draft`），
+检测 `draft: true → false` 的转换来判定 "Mark as ready"：
 
-1. `object_kind == "merge_request"`
-2. `object_attributes.action == "update"`
-3. `changes.draft.from == true` 且 `changes.draft.to == false`
+| 事件 | 行为 |
+| --- | --- |
+| 首次见到某 MR（冷启动） | 记录当前 draft，**不触发** |
+| `open` / `reopen` | 记录当前 draft，不触发 |
+| `update` 且上次 `true`、当前 `false` | **触发流水线** |
+| `update` 其它情况 | 仅更新状态，不触发 |
+| `close` / `merge` | 清除状态，不触发 |
 
-任一不满足都会被忽略并返回 `200 {"status":"ignored"}`，不会干扰 GitLab 重试。
-若 `changes.draft` 缺失（GitLab 版本低于 17.10），同样忽略并记录日志。
+> 说明：GitLab webhook 的 `changes.draft` 字段并不可靠（实测在 "Mark as ready"
+> 时可能缺失或报告 `from:false,to:false`），因此改为跟踪可靠的
+> `object_attributes.draft` 字段推导状态转换。
+
+触发成功后才会推进内部状态，因此若 GitLab API 调用失败，GitLab 重试时会再次尝试触发。
+冷启动（网关重启后）首次事件仅记录状态、不触发，避免对已就绪 MR 的频繁更新误触发流水线。
 
 ## 常见问题
 
