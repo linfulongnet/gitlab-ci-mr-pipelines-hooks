@@ -149,7 +149,31 @@ A: 在 GitLab Webhook 页面点击 "Test"，网关日志会输出收到的事件
 ```bash
 make test    # 单元测试
 make vet     # 静态检查
-make build   # 编译
+make build   # 一键编译到 output/（含配置文件）
+```
+
+### 一键编译
+
+编译二进制并连同配置文件一起输出到 `output/` 目录：
+
+```bash
+./build.sh                 # 编译当前平台
+./build.sh linux amd64     # 交叉编译指定平台/架构
+make build                 # 等价于 ./build.sh
+```
+
+产物结构：
+
+```
+output/
+├── gitlab-ci-mr-pipelines-hooks   # 可执行文件
+└── config.yaml                    # 配置文件（由 config.example.yaml 复制）
+```
+
+运行：
+
+```bash
+./output/gitlab-ci-mr-pipelines-hooks -config output/config.yaml
 ```
 
 ## 许可证
