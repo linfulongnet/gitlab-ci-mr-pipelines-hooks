@@ -3,12 +3,13 @@
 
 # HTTP 监听配置
 listen:
-  addr: ":8080"
+  addr: ":9932"
 
-# 私有化 GitLab 连接配置
+# GitLab 连接配置
 gitlab:
-  # GitLab 根地址（含端口），例如 http://gitlab.example.com:8929
-  base_url: "http://gitlab.example.com:8929"
+  # GitLab 根地址（含端口）。可选，默认使用公有 GitLab https://gitlab.com。
+  # 私有化部署示例：http://gitlab.example.com:8929
+  base_url: "https://gitlab.com"
   # 访问令牌（Personal/Project Access Token，需勾选 api 权限）
   token: "glpat-xxxxxxxxxxxxxxxx"
 

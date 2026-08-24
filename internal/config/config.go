@@ -31,9 +31,10 @@ type ListenConfig struct {
 	Addr string `yaml:"addr"`
 }
 
-// GitLabConfig 私有化 GitLab 连接配置。
+// GitLabConfig GitLab 连接配置。
 type GitLabConfig struct {
-	// BaseURL GitLab 根地址（含端口），例如 "http://gitlab.example.com:8929"
+	// BaseURL GitLab 根地址（含端口），例如 "http://gitlab.example.com:8929"。
+	// 可选，默认使用公有 GitLab https://gitlab.com。
 	BaseURL string `yaml:"base_url"`
 	// Token 用于调用 GitLab API 的访问令牌（需要 api 权限）
 	Token string `yaml:"token"`
@@ -50,7 +51,10 @@ type WebhookConfig struct {
 func Default() *Config {
 	return &Config{
 		Listen: ListenConfig{
-			Addr: ":8080",
+			Addr: ":9932",
+		},
+		GitLab: GitLabConfig{
+			BaseURL: "https://gitlab.com",
 		},
 		PipelineTimeout: 30 * time.Second,
 		MaxBodyBytes:    10 << 20, // 10MB
@@ -79,9 +83,6 @@ func Load(path string) (*Config, error) {
 
 // Validate 校验配置合法性并做规范化。
 func (c *Config) Validate() error {
-	if c.GitLab.BaseURL == "" {
-		return fmt.Errorf("缺少必需配置 gitlab.base_url")
-	}
 	if c.GitLab.Token == "" {
 		return fmt.Errorf("缺少必需配置 gitlab.token")
 	}

@@ -49,12 +49,12 @@ MR Pipeline
 ```yaml
 # HTTP 监听配置
 listen:
-  addr: ":8080"
+  addr: ":9932"
 
-# 私有化 GitLab 连接配置
+# GitLab 连接配置
 gitlab:
-  base_url: "http://gitlab.example.com:8929"   # 根地址，含端口
-  token: "glpat-xxxxxxxxxxxxxxxx"               # 访问令牌（需 api 权限）
+  base_url: "https://gitlab.com"              # 可选，默认公有 GitLab；私有化填根地址含端口
+  token: "glpat-xxxxxxxxxxxxxxxx"             # 访问令牌（需 api 权限）
 
 # Webhook 校验配置
 webhook:
@@ -69,8 +69,8 @@ max_body_bytes: 10485760
 
 | 配置项 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `listen.addr` | ❌ | `:8080` | 网关 HTTP 监听地址 |
-| `gitlab.base_url` | ✅ | — | 私有化 GitLab 根地址，含端口，如 `http://gitlab.example.com:8929` |
+| `listen.addr` | ❌ | `:9932` | 网关 HTTP 监听地址 |
+| `gitlab.base_url` | ❌ | `https://gitlab.com` | GitLab 根地址，含端口；私有化如 `http://gitlab.example.com:8929` |
 | `gitlab.token` | ✅ | — | GitLab 访问令牌（Personal/Project Access Token，需勾选 `api` 权限） |
 | `webhook.secret` | ❌ | 空（不校验） | Webhook Secret token，建议配置 |
 | `pipeline_timeout` | ❌ | `30s` | GitLab API 调用超时（如 `10s`、`1m`） |
@@ -91,20 +91,20 @@ cp config.example.yaml config.yaml
 
 ```bash
 docker build -t mr-hooks-gateway .
-docker run -d -p 8080:8080 \
+docker run -d -p 9932:9932 \
   -v "$PWD/config.yaml:/etc/gateway/config.yaml:ro" \
   --name mr-hooks mr-hooks-gateway
 ```
 
 > 镜像默认从 `/etc/gateway/config.yaml` 读取配置，通过挂载覆盖即可。
 
-健康检查：`curl http://localhost:8080/healthz` → `{"status":"ok"}`
+健康检查：`curl http://localhost:9932/healthz` → `{"status":"ok"}`
 
 ### 2. 配置 GitLab Webhook
 
 项目 → **Settings → Webhooks**（或群组级 Webhook）：
 
-- **URL**: `http://<网关地址>:8080/webhook`
+- **URL**: `http://<网关地址>:9932/webhook`
 - **Secret token**: 与 `config.yaml` 中 `webhook.secret` 一致
 - **Trigger**: 勾选 **Merge request events**
 - 保存后点击 **Test** 验证连通性

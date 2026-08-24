@@ -12,5 +12,5 @@ RUN apk add --no-cache ca-certificates && adduser -D -u 10001 app
 USER app
 COPY --from=build /out/gateway /usr/local/bin/gateway
 COPY config.example.yaml /etc/gateway/config.yaml
-EXPOSE 8080
+EXPOSE 9932
 ENTRYPOINT ["/usr/local/bin/gateway", "-config", "/etc/gateway/config.yaml"]
