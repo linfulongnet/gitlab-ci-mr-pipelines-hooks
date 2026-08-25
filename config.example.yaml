@@ -10,7 +10,9 @@ gitlab:
   # GitLab 根地址（含端口）。可选，默认使用公有 GitLab https://gitlab.com。
   # 私有化部署示例：http://gitlab.example.com:8929
   base_url: "https://gitlab.com"
-  # 访问令牌（Personal/Project Access Token，需勾选 api 权限）
+  # 访问令牌（Personal/Project Access Token）。
+  # 必须：角色为 Developer 或更高，且勾选 api scope。
+  # 注意：项目访问令牌默认是 Guest 角色，需手动改为 Developer，否则无法创建流水线。
   token: "glpat-xxxxxxxxxxxxxxxx"
   # 跳过 TLS 证书校验。适用于自签名证书或证书不含 IP SAN 的私有化部署。
   # 注意：会降低安全性，仅建议内网使用。

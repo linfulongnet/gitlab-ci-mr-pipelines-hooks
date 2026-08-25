@@ -76,13 +76,31 @@ max_body_bytes: 10485760
 | --- | --- | --- | --- |
 | `listen.addr` | ❌ | `:9932` | 网关 HTTP 监听地址 |
 | `gitlab.base_url` | ❌ | `https://gitlab.com` | GitLab 根地址，含端口；私有化如 `http://gitlab.example.com:8929` |
-| `gitlab.token` | ✅ | — | GitLab 访问令牌（Personal/Project Access Token，需勾选 `api` 权限） |
+| `gitlab.token` | ✅ | — | GitLab 访问令牌，需 **Developer+ 角色** 且勾选 `api` scope（见下方"令牌要求"） |
 | `gitlab.insecure_skip_verify` | ❌ | `false` | 跳过 TLS 证书校验（自签名/证书无 IP SAN 场景），仅建议内网使用 |
 | `gitlab.ca_cert_file` | ❌ | 空 | 自定义 CA 证书路径（PEM），GitLab 用内部 CA 签发证书时配置 |
 | `webhook.secret` | ❌ | 空（不校验） | Webhook Secret token，建议配置 |
 | `state_file` | ❌ | `state.json` | 状态持久化文件；留空则不持久化 |
 | `pipeline_timeout` | ❌ | `30s` | GitLab API 调用超时（如 `10s`、`1m`） |
 | `max_body_bytes` | ❌ | `10485760` | Webhook 请求体上限（字节） |
+
+## 令牌要求（重要）
+
+`gitlab.token` 用于调用 GitLab API 创建 MR 流水线，**必须同时满足**：
+
+1. **令牌类型**：个人访问令牌（PAT）或项目访问令牌均可。
+   - 个人访问令牌：用户设置 → Access Tokens 创建，归属你自己。
+   - 项目访问令牌：项目 → Settings → Access Tokens 创建，归属一个 bot 用户
+     （流水线 "Created by" 会显示该 bot，而非创建者）。
+2. **角色（Role）**：**必须为 Developer（开发者）或更高**（Maintainer/Owner）。
+   - 项目访问令牌默认是 **Guest** 角色，Guest/Reporter **没有创建流水线的权限**，
+     会报 `400 Insufficient permissions to create a new pipeline`。
+   - 创建/编辑令牌时，将 Role 设为 **Developer**。
+3. **权限范围（Scope）**：必须勾选 **`api`**（完整 API 访问）。
+   - 仅 `read_api` 或 `read_repository` 不足以创建流水线。
+
+> 排查：若触发时报 `400 Insufficient permissions to create a new pipeline`，
+> 请检查令牌角色是否为 Developer+；若报 `401`，检查令牌是否有效及 `api` scope。
 
 ## 快速开始
 
@@ -159,8 +177,9 @@ docker run -d -p 9932:9932 \
 A: 网关只负责"创建 MR Pipeline"。Job 是否执行取决于项目的 `.gitlab-ci.yml` 中
 `workflow: rules` 是否允许 MR pipeline（如 `if: $CI_PIPELINE_SOURCE == "merge_request_event"`）。
 
-**Q: 409 / 403 错误？**
-A: 确认 `config.yaml` 中 `gitlab.token` 具备 `api` 权限，且属于该项目或更高层级。
+**Q: 400 / 403 错误？**
+A: 确认 `config.yaml` 中 `gitlab.token` 具备 **Developer+ 角色** 且勾选 **`api`** scope，
+且属于该项目或更高层级。项目访问令牌默认是 Guest 角色，需手动改为 Developer。
 
 **Q: 如何确认网关收到了事件？**
 A: 在 GitLab Webhook 页面点击 "Test"，网关日志会输出收到的事件与判定结果。
