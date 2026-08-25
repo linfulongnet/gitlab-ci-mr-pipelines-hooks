@@ -7,6 +7,9 @@
 # 本地环境变量（包含令牌，绝不提交）
 .env
 .env.*
+config.yaml
+config.yaml.bak
+*.bak
 
 # 测试与覆盖率
 coverage.out

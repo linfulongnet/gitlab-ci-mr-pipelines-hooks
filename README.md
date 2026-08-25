@@ -59,6 +59,10 @@ gitlab:
 webhook:
   secret: ""                                    # 与 GitLab Webhook Secret 一致；留空不校验
 
+# 状态持久化文件路径。网关重启后恢复 MR 草稿状态，避免冷启动误判。
+# 留空则不持久化（仅内存跟踪）。
+state_file: "state.json"
+
 # 调用 GitLab API 的超时时间
 pipeline_timeout: 30s
 
@@ -72,6 +76,7 @@ max_body_bytes: 10485760
 | `gitlab.base_url` | ❌ | `https://gitlab.com` | GitLab 根地址，含端口；私有化如 `http://gitlab.example.com:8929` |
 | `gitlab.token` | ✅ | — | GitLab 访问令牌（Personal/Project Access Token，需勾选 `api` 权限） |
 | `webhook.secret` | ❌ | 空（不校验） | Webhook Secret token，建议配置 |
+| `state_file` | ❌ | `state.json` | 状态持久化文件；留空则不持久化 |
 | `pipeline_timeout` | ❌ | `30s` | GitLab API 调用超时（如 `10s`、`1m`） |
 | `max_body_bytes` | ❌ | `10485760` | Webhook 请求体上限（字节） |
 
@@ -138,7 +143,11 @@ docker run -d -p 9932:9932 \
 > `object_attributes.draft` 字段推导状态转换。
 
 触发成功后才会推进内部状态，因此若 GitLab API 调用失败，GitLab 重试时会再次尝试触发。
-冷启动（网关重启后）首次事件仅记录状态、不触发，避免对已就绪 MR 的频繁更新误触发流水线。
+
+**状态持久化**：状态会写入 `state_file` 指定的 JSON 文件（默认 `state.json`）。
+网关重启后自动恢复历史状态，避免冷启动误判——例如重启前 MR 为草稿、重启后
+首次事件是 ready，若状态丢失会漏触发。真正的冷启动（无状态文件）首次事件
+仅记录状态、不触发，避免对已就绪 MR 的频繁更新误触发流水线。
 
 ## 常见问题
 

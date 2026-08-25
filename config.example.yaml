@@ -18,6 +18,10 @@ webhook:
   # 与 GitLab Webhook 中配置的 Secret token 一致；留空则不校验（不推荐）
   secret: ""
 
+# 状态持久化文件路径。网关重启后恢复 MR 草稿状态，避免冷启动误判。
+# 留空则不持久化（仅内存跟踪）。
+state_file: "state.json"
+
 # 调用 GitLab API 的超时时间
 pipeline_timeout: 30s
 

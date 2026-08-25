@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/linfulongnet/gitlab-ci-mr-pipelines-hooks/internal/gitlab"
@@ -30,7 +31,7 @@ func newPayload(action string, draft bool, projectID, iid int) *Payload {
 
 // 模拟真实流程：open(draft) -> update(ready) 应触发
 func TestStateTrackerDraftToReady(t *testing.T) {
-	tracker := newStateTracker()
+	tracker := newStateTracker("", testLogger())
 
 	// 创建草稿 MR
 	if r := tracker.Evaluate(newPayload("open", true, 7, 10)); r.Triggered {
@@ -45,7 +46,7 @@ func TestStateTrackerDraftToReady(t *testing.T) {
 
 // 冷启动：首次见到 update 事件（无 open 记录）不应触发
 func TestStateTrackerColdStartNoTrigger(t *testing.T) {
-	tracker := newStateTracker()
+	tracker := newStateTracker("", testLogger())
 	r := tracker.Evaluate(newPayload("update", false, 7, 10))
 	if r.Triggered {
 		t.Fatalf("冷启动首次事件不应触发: %+v", r)
@@ -53,7 +54,7 @@ func TestStateTrackerColdStartNoTrigger(t *testing.T) {
 }
 
 func TestStateTrackerNotMergeRequest(t *testing.T) {
-	tracker := newStateTracker()
+	tracker := newStateTracker("", testLogger())
 	p := newPayload("update", false, 7, 10)
 	p.ObjectKind = "push"
 	if r := tracker.Evaluate(p); r.Triggered {
@@ -63,7 +64,7 @@ func TestStateTrackerNotMergeRequest(t *testing.T) {
 
 // ready -> draft 不应触发
 func TestStateTrackerReadyToDraftIgnored(t *testing.T) {
-	tracker := newStateTracker()
+	tracker := newStateTracker("", testLogger())
 	tracker.Evaluate(newPayload("open", false, 7, 10)) // 创建即 ready
 	if r := tracker.Evaluate(newPayload("update", true, 7, 10)); r.Triggered {
 		t.Fatalf("ready -> draft 不应触发: %+v", r)
@@ -72,7 +73,7 @@ func TestStateTrackerReadyToDraftIgnored(t *testing.T) {
 
 // draft 状态未变化不应触发
 func TestStateTrackerDraftUnchangedIgnored(t *testing.T) {
-	tracker := newStateTracker()
+	tracker := newStateTracker("", testLogger())
 	tracker.Evaluate(newPayload("open", true, 7, 10))
 	if r := tracker.Evaluate(newPayload("update", true, 7, 10)); r.Triggered {
 		t.Fatalf("draft 未变化不应触发: %+v", r)
@@ -81,7 +82,7 @@ func TestStateTrackerDraftUnchangedIgnored(t *testing.T) {
 
 // 多次切换：draft -> ready -> draft -> ready，第二次 ready 也应触发
 func TestStateTrackerMultipleToggles(t *testing.T) {
-	tracker := newStateTracker()
+	tracker := newStateTracker("", testLogger())
 	tracker.Evaluate(newPayload("open", true, 7, 10)) // draft
 
 	if r := tracker.Evaluate(newPayload("update", false, 7, 10)); !r.Triggered {
@@ -100,7 +101,7 @@ func TestStateTrackerMultipleToggles(t *testing.T) {
 
 // close/merge 清除状态
 func TestStateTrackerCloseClearsState(t *testing.T) {
-	tracker := newStateTracker()
+	tracker := newStateTracker("", testLogger())
 	tracker.Evaluate(newPayload("open", true, 7, 10))
 	if r := tracker.Evaluate(newPayload("close", false, 7, 10)); r.Triggered {
 		t.Fatalf("close 不应触发: %+v", r)
@@ -113,7 +114,7 @@ func TestStateTrackerCloseClearsState(t *testing.T) {
 
 // 触发失败后状态不推进，重试可再次触发
 func TestStateTrackerAdvanceOnlyOnSuccess(t *testing.T) {
-	tracker := newStateTracker()
+	tracker := newStateTracker("", testLogger())
 	tracker.Evaluate(newPayload("open", true, 7, 10))
 
 	// 触发失败：不调用 Advance，状态仍为 draft
@@ -170,7 +171,7 @@ func TestHandlerTriggersPipeline(t *testing.T) {
 	fake := &fakeTriggerer{
 		pipeline: &gitlab.Pipeline{ID: 123, Status: "pending", WebURL: "https://gitlab.example.com/pipe/123"},
 	}
-	h := NewHandler(fake, "secret", testLogger())
+	h := NewHandler(fake, "secret", "", testLogger())
 
 	// 创建草稿 MR
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(payloadJSON("open", true)))
@@ -205,7 +206,7 @@ func TestHandlerTriggersPipeline(t *testing.T) {
 }
 
 func TestHandlerRejectsBadSecret(t *testing.T) {
-	h := NewHandler(&fakeTriggerer{}, "secret", testLogger())
+	h := NewHandler(&fakeTriggerer{}, "secret", "", testLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(payloadJSON("update", false)))
 	req.Header.Set("X-Gitlab-Token", "wrong")
@@ -221,7 +222,7 @@ func TestHandlerRejectsBadSecret(t *testing.T) {
 // 冷启动：无 open 记录直接收到 update(ready) 不应触发
 func TestHandlerColdStartNoTrigger(t *testing.T) {
 	fake := &fakeTriggerer{pipeline: &gitlab.Pipeline{ID: 1}}
-	h := NewHandler(fake, "", testLogger())
+	h := NewHandler(fake, "", "", testLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(payloadJSON("update", false)))
 	rec := httptest.NewRecorder()
@@ -232,5 +233,51 @@ func TestHandlerColdStartNoTrigger(t *testing.T) {
 	}
 	if fake.calls != 0 {
 		t.Fatalf("冷启动不应触发流水线，实际触发 %d 次", fake.calls)
+	}
+}
+
+// --- 状态持久化测试 ---
+
+// 重启后恢复状态：重启前 MR 为 draft，重启后首次事件是 ready 应触发
+func TestStatePersistenceAcrossRestart(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+
+	// 第一次运行：记录 draft=true（open 事件）
+	tracker1 := newStateTracker(stateFile, testLogger())
+	tracker1.Evaluate(newPayload("open", true, 7, 10))
+
+	// 模拟重启：用同一状态文件创建新 tracker
+	tracker2 := newStateTracker(stateFile, testLogger())
+
+	// 重启后首次事件是 ready（update draft:false），应触发
+	r := tracker2.Evaluate(newPayload("update", false, 7, 10))
+	if !r.Triggered {
+		t.Fatalf("重启后恢复状态应触发，实际: %+v", r)
+	}
+}
+
+// 持久化推进：触发成功后状态写入文件，重启后不再重复触发
+func TestStatePersistenceAdvance(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+
+	tracker1 := newStateTracker(stateFile, testLogger())
+	tracker1.Evaluate(newPayload("open", true, 7, 10))
+	if r := tracker1.Evaluate(newPayload("update", false, 7, 10)); !r.Triggered {
+		t.Fatalf("应触发: %+v", r)
+	}
+	tracker1.Advance(newPayload("update", false, 7, 10))
+
+	// 重启后状态应为 false，再次收到 ready 事件不触发
+	tracker2 := newStateTracker(stateFile, testLogger())
+	if r := tracker2.Evaluate(newPayload("update", false, 7, 10)); r.Triggered {
+		t.Fatalf("重启后不应重复触发: %+v", r)
+	}
+}
+
+// 无状态文件时（冷启动）不触发，且不写文件
+func TestStatePersistenceDisabled(t *testing.T) {
+	tracker := newStateTracker("", testLogger())
+	if r := tracker.Evaluate(newPayload("update", false, 7, 10)); r.Triggered {
+		t.Fatalf("无持久化冷启动不应触发: %+v", r)
 	}
 }

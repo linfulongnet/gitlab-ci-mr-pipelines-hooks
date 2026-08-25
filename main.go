@@ -39,7 +39,7 @@ func main() {
 	}
 
 	client := gitlab.New(cfg.GitLab.BaseURL, cfg.GitLab.Token, cfg.PipelineTimeout)
-	handler := webhook.NewHandler(client, cfg.Webhook.Secret, logger)
+	handler := webhook.NewHandler(client, cfg.Webhook.Secret, cfg.StateFile, logger)
 
 	mux := http.NewServeMux()
 	mux.Handle("/webhook", handler)

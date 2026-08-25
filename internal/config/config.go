@@ -19,6 +19,9 @@ type Config struct {
 	GitLab GitLabConfig `yaml:"gitlab"`
 	// Webhook Webhook 校验配置
 	Webhook WebhookConfig `yaml:"webhook"`
+	// StateFile 状态持久化文件路径。网关重启后恢复 MR 草稿状态，
+	// 避免冷启动误判。留空则不持久化（仅内存跟踪）。
+	StateFile string `yaml:"state_file"`
 	// PipelineTimeout 调用 GitLab API 的超时时间
 	PipelineTimeout time.Duration `yaml:"pipeline_timeout"`
 	// MaxBodyBytes Webhook 请求体的最大字节数
@@ -56,6 +59,7 @@ func Default() *Config {
 		GitLab: GitLabConfig{
 			BaseURL: "https://gitlab.com",
 		},
+		StateFile:       "state.json",
 		PipelineTimeout: 30 * time.Second,
 		MaxBodyBytes:    10 << 20, // 10MB
 	}
