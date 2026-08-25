@@ -41,6 +41,14 @@ type GitLabConfig struct {
 	BaseURL string `yaml:"base_url"`
 	// Token 用于调用 GitLab API 的访问令牌（需要 api 权限）
 	Token string `yaml:"token"`
+	// InsecureSkipVerify 为 true 时跳过 TLS 证书校验。
+	// 适用于私有化部署使用自签名证书或证书不含 IP SAN 的场景。
+	// 注意：这会降低安全性，仅建议在内网使用。
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
+	// CACertFile 自定义 CA 证书文件路径（PEM 格式）。
+	// 当 GitLab 使用内部 CA 签发的证书时，指定该文件以信任它。
+	// 与 InsecureSkipVerify 互斥，优先使用 CA 证书。
+	CACertFile string `yaml:"ca_cert_file"`
 }
 
 // WebhookConfig Webhook 校验配置。

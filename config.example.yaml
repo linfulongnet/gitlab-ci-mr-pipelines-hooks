@@ -12,6 +12,12 @@ gitlab:
   base_url: "https://gitlab.com"
   # 访问令牌（Personal/Project Access Token，需勾选 api 权限）
   token: "glpat-xxxxxxxxxxxxxxxx"
+  # 跳过 TLS 证书校验。适用于自签名证书或证书不含 IP SAN 的私有化部署。
+  # 注意：会降低安全性，仅建议内网使用。
+  insecure_skip_verify: false
+  # 自定义 CA 证书文件路径（PEM 格式）。GitLab 使用内部 CA 签发证书时配置。
+  # 与 insecure_skip_verify 互斥，优先使用 CA 证书。
+  ca_cert_file: ""
 
 # Webhook 校验配置
 webhook:

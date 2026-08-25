@@ -38,7 +38,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := gitlab.New(cfg.GitLab.BaseURL, cfg.GitLab.Token, cfg.PipelineTimeout)
+	client, err := gitlab.New(cfg.GitLab.BaseURL, cfg.GitLab.Token, gitlab.Options{
+		Timeout:            cfg.PipelineTimeout,
+		InsecureSkipVerify: cfg.GitLab.InsecureSkipVerify,
+		CACertFile:         cfg.GitLab.CACertFile,
+	})
+	if err != nil {
+		logger.Error("创建 GitLab 客户端失败", "err", err)
+		os.Exit(1)
+	}
 	handler := webhook.NewHandler(client, cfg.Webhook.Secret, cfg.StateFile, logger)
 
 	mux := http.NewServeMux()

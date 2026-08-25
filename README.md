@@ -54,6 +54,8 @@ listen:
 gitlab:
   base_url: "https://gitlab.com"              # 可选，默认公有 GitLab；私有化填根地址含端口
   token: "glpat-xxxxxxxxxxxxxxxx"             # 访问令牌（需 api 权限）
+  insecure_skip_verify: false                 # 跳过 TLS 校验（自签名/无 IP SAN 证书场景）
+  ca_cert_file: ""                            # 自定义 CA 证书路径（PEM），与上者互斥
 
 # Webhook 校验配置
 webhook:
@@ -75,6 +77,8 @@ max_body_bytes: 10485760
 | `listen.addr` | ❌ | `:9932` | 网关 HTTP 监听地址 |
 | `gitlab.base_url` | ❌ | `https://gitlab.com` | GitLab 根地址，含端口；私有化如 `http://gitlab.example.com:8929` |
 | `gitlab.token` | ✅ | — | GitLab 访问令牌（Personal/Project Access Token，需勾选 `api` 权限） |
+| `gitlab.insecure_skip_verify` | ❌ | `false` | 跳过 TLS 证书校验（自签名/证书无 IP SAN 场景），仅建议内网使用 |
+| `gitlab.ca_cert_file` | ❌ | 空 | 自定义 CA 证书路径（PEM），GitLab 用内部 CA 签发证书时配置 |
 | `webhook.secret` | ❌ | 空（不校验） | Webhook Secret token，建议配置 |
 | `state_file` | ❌ | `state.json` | 状态持久化文件；留空则不持久化 |
 | `pipeline_timeout` | ❌ | `30s` | GitLab API 调用超时（如 `10s`、`1m`） |

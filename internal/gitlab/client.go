@@ -4,11 +4,14 @@ package gitlab
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 )
@@ -31,16 +34,49 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// Options 是 GitLab 客户端的可选配置。
+type Options struct {
+	// Timeout 请求超时时间
+	Timeout time.Duration
+	// InsecureSkipVerify 跳过 TLS 证书校验（自签名/无 IP SAN 证书场景）
+	InsecureSkipVerify bool
+	// CACertFile 自定义 CA 证书文件路径（PEM 格式）
+	CACertFile string
+}
+
 // New 创建一个 GitLab API 客户端。
 // baseURL 应为 GitLab 根地址（不含 /api/v4），例如 "http://gitlab.example.com:8929"。
-func New(baseURL, token string, timeout time.Duration) *Client {
+func New(baseURL, token string, opts Options) (*Client, error) {
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+
+	// 优先使用自定义 CA 证书；否则按需跳过校验
+	if opts.CACertFile != "" {
+		pem, err := os.ReadFile(opts.CACertFile)
+		if err != nil {
+			return nil, fmt.Errorf("读取 CA 证书失败: %w", err)
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("CA 证书文件 %s 中没有有效的 PEM 证书", opts.CACertFile)
+		}
+		tlsConfig.RootCAs = pool
+	} else if opts.InsecureSkipVerify {
+		tlsConfig.InsecureSkipVerify = true
+	}
+
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+
 	return &Client{
 		baseURL: baseURL,
 		token:   token,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Timeout:   opts.Timeout,
+			Transport: transport,
 		},
-	}
+	}, nil
 }
 
 // TriggerMRPipeline 为指定 MR 触发一次流水线：
